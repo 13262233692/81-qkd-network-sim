@@ -1,6 +1,7 @@
 mod photon;
 mod pipeline;
 mod qber;
+mod privacy_amplification;
 
 use std::time::Instant;
 use colored::*;
@@ -8,7 +9,7 @@ use clap::Parser;
 
 use pipeline::{PipelineConfig, run_pipeline, compute_qber_from_sifted, CHANNEL_CAPACITY, BATCH_SIZE};
 use qber::check_and_alert;
-use photon::Bit;
+use privacy_amplification::{LdpcConfig, AmplificationConfig, run_privacy_amplification_pipeline, print_final_keys};
 
 fn format_num(n: usize) -> String {
     n.to_string()
@@ -22,7 +23,7 @@ fn format_num(n: usize) -> String {
 }
 
 #[derive(Parser, Debug, Clone)]
-#[command(name = "qkd-network-sim", version = "0.1.0", about = "Quantum Key Distribution Network Simulator")]
+#[command(name = "qkd-network-sim", version = "0.2.0", about = "Quantum Key Distribution Network Simulator — BB84 + LDPC + Privacy Amplification")]
 struct Cli {
     #[arg(short = 'n', long = "num-photons", default_value_t = 10_000_000)]
     num_photons: usize,
@@ -44,6 +45,15 @@ struct Cli {
 
     #[arg(short = 'b', long = "batch-size", default_value_t = BATCH_SIZE)]
     batch_size: usize,
+
+    #[arg(long = "no-ldpc", default_value_t = false)]
+    no_ldpc: bool,
+
+    #[arg(short = 'r', long = "compression-ratio", default_value_t = 0.5)]
+    compression_ratio: f64,
+
+    #[arg(long = "no-amplify", default_value_t = false)]
+    no_amplify: bool,
 }
 
 fn print_header() {
@@ -56,7 +66,7 @@ fn print_header() {
     println!("{}", "║        ╚═╝     ╚═╝  ╚═╝╚═════╝     ╚═╝  ╚═══╝╚══════╝   ╚═╝   ║".bright_cyan().bold());
     println!("{}", "╚═══════════════════════════════════════════════════════════════╝".bright_cyan().bold());
     println!("\n{}", "     Quantum Key Distribution Network Terminal Simulator".yellow().bold());
-    println!("{}", "     BB84 Protocol · Bounded Channel Backpressure Pipeline".yellow());
+    println!("{}", "  BB84 · LDPC Error Correction · Toeplitz Privacy Amplification".yellow());
     println!();
 }
 
@@ -81,6 +91,14 @@ fn print_config(cli: &Cli) {
     println!("    Backpressure:            {}",
         "sync_channel BLOCKING".bright_yellow().bold()
     );
+    println!();
+    println!("{}", "  Post-Processing Configuration:".bright_magenta().bold());
+    println!("  {}", "─".repeat(50).bright_magenta());
+    println!("    LDPC error correction:   {}", if cli.no_ldpc { "SKIPPED".red() } else { "ENABLED".green().bold() });
+    println!("    Privacy amplification:   {}", if cli.no_amplify { "SKIPPED".red() } else { "ENABLED".green().bold() });
+    if !cli.no_amplify {
+        println!("    Compression ratio:       {:.0}%", cli.compression_ratio * 100.0);
+    }
     println!();
 }
 
@@ -171,22 +189,48 @@ fn main() {
     if !secure {
         println!("\n{}", "  KEY NEGOTIATION ABORTED - Channel compromised!".red().bold().blink());
         std::process::exit(1);
+    }
+
+    if !cli.no_amplify {
+        println!("\n{}", "╔═══════════════════════════════════════════════════════════════╗".bright_magenta().bold());
+        println!("{}", "║  Phase 6: LDPC Error Correction + Privacy Amplification      ║".bright_magenta().bold());
+        println!("{}", "╚═══════════════════════════════════════════════════════════════╝".bright_magenta().bold());
+
+        let ldpc_config = LdpcConfig {
+            enabled: !cli.no_ldpc,
+            max_iterations: 10,
+            seed: cli.seed.wrapping_add(88888),
+        };
+
+        let amp_config = AmplificationConfig {
+            compression_ratio: cli.compression_ratio,
+            seed: cli.seed.wrapping_add(66666),
+        };
+
+        let (alice_final_hex, bob_final_hex, amp_stats, _remaining_errors) = run_privacy_amplification_pipeline(
+            &stats.sifted_key_alice,
+            &stats.sifted_key_bob,
+            &ldpc_config,
+            &amp_config,
+        );
+
+        print_final_keys(&alice_final_hex, &bob_final_hex, &amp_stats);
     } else {
         println!("\n{}", "  KEY AGREEMENT COMPLETE - Secure key established!".green().bold());
-        println!("\n  Final key preview (first 64 bits):");
+        println!("\n  Sifted key preview (first 64 bits, no amplification):");
         print!("    Alice: ");
         for i in 0..stats.sifted_key_length.min(64) {
             match stats.sifted_key_alice[i] {
-                Bit::Zero => print!("{}", "0".bright_black()),
-                Bit::One => print!("{}", "1".white().bold()),
+                photon::Bit::Zero => print!("{}", "0".bright_black()),
+                photon::Bit::One => print!("{}", "1".white().bold()),
             }
         }
         println!();
         print!("    Bob:   ");
         for i in 0..stats.sifted_key_length.min(64) {
             match stats.sifted_key_bob[i] {
-                Bit::Zero => print!("{}", "0".bright_black()),
-                Bit::One => print!("{}", "1".white().bold()),
+                photon::Bit::Zero => print!("{}", "0".bright_black()),
+                photon::Bit::One => print!("{}", "1".white().bold()),
             }
         }
         println!();
