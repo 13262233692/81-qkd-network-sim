@@ -1,7 +1,6 @@
 use colored::*;
 use rayon::prelude::*;
 use crate::photon::Bit;
-use crate::channel::SiftedKey;
 
 pub const QBER_THRESHOLD: f64 = 0.11;
 
@@ -12,50 +11,6 @@ pub struct QberResult {
     pub total_compared: usize,
     pub threshold_exceeded: bool,
     pub sample_size: usize,
-}
-
-pub fn calculate_qber_parallel(
-    alice_bits: &[Bit],
-    bob_bits: &[Bit],
-    sample_fraction: f64,
-) -> QberResult {
-    let sample_size = (alice_bits.len() as f64 * sample_fraction) as usize;
-    let sample_size = sample_size.max(100).min(alice_bits.len());
-
-    let chunk_size = (sample_size / rayon::current_num_threads()).max(128);
-    let num_chunks = (sample_size + chunk_size - 1) / chunk_size;
-
-    let errors: Vec<usize> = (0..num_chunks)
-        .into_par_iter()
-        .map(|chunk_idx| {
-            let start = chunk_idx * chunk_size;
-            let end = (start + chunk_size).min(sample_size);
-            let mut local_errors = 0usize;
-
-            for i in start..end {
-                if alice_bits[i] != bob_bits[i] {
-                    local_errors += 1;
-                }
-            }
-
-            local_errors
-        })
-        .collect();
-
-    let total_errors: usize = errors.iter().sum();
-    let qber = if sample_size > 0 {
-        total_errors as f64 / sample_size as f64
-    } else {
-        0.0
-    };
-
-    QberResult {
-        qber,
-        error_count: total_errors,
-        total_compared: sample_size,
-        threshold_exceeded: qber > QBER_THRESHOLD,
-        sample_size,
-    }
 }
 
 pub fn calculate_qber_full(
@@ -96,10 +51,6 @@ pub fn calculate_qber_full(
         threshold_exceeded: qber > QBER_THRESHOLD,
         sample_size: alice_bits.len(),
     }
-}
-
-pub fn calculate_qber_from_sifted(sifted_key: &SiftedKey) -> QberResult {
-    calculate_qber_full(&sifted_key.alice_bits, &sifted_key.bob_bits)
 }
 
 pub fn print_qber_report(result: &QberResult) {
